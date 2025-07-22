@@ -251,9 +251,21 @@
                 document.body.removeChild(link);
             }
         }
+        
+        // [ENHANCEMENT] Fungsi untuk membersihkan dan mengonversi format angka yang beragam
+        function cleanNumber(value) {
+            if (value === null || value === undefined || value === '-' || String(value).trim() === '') {
+                return null; // Menggambarkan data kosong sebagai null
+            }
+            // Mengubah "12.500" menjadi "12500" agar bisa di-parse sebagai angka
+            let numStr = String(value).replace(/\./g, '').replace(/,/g, '.');
+            const num = parseFloat(numStr);
+            return isNaN(num) ? null : num;
+        }
 
         function formatRupiah(angka) {
-            if (angka === null || isNaN(angka) || angka === 0) return 'N/A';
+            if (angka === null || isNaN(angka)) return 'N/A'; // Menampilkan N/A jika angka tidak valid
+            if (angka === 0) return 'Rp 0';
             return new Intl.NumberFormat('id-ID', {
                 style: 'currency', currency: 'IDR', minimumFractionDigits: 0
             }).format(angka);
@@ -261,7 +273,7 @@
         
         function formatPersen(angka) {
             if (angka === null || isNaN(angka)) return 'N/A';
-            const icon = angka > 0 ? '<i class="bi bi-arrow-up-right"></i> ' : '<i class="bi bi-arrow-down-right"></i> ';
+            const icon = angka >= 0 ? '<i class="bi bi-arrow-up-right"></i> ' : '<i class="bi bi-arrow-down-right"></i> ';
             return icon + angka.toFixed(2) + ' %';
         }
 
@@ -299,14 +311,15 @@
             });
         }
         
+        // [FIXED] Memperbaiki logika untuk menampilkan tabel kabupaten
         function updateKabupatenTable(bulan) {
             document.getElementById('kabupatenTableHeader').textContent = `Harga Rata-Rata Beras per Kabupaten (${bulan})`;
             const tbody = document.getElementById('kabupatenTableBody');
             tbody.innerHTML = '';
-            const bulanKey = bulan.split(' ')[0];
-            const dataBulanIni = dataPerKabupaten[bulanKey];
+            // [FIX] Menggunakan 'bulan' secara langsung sebagai kunci, bukan 'bulan.split(' ')[0]'
+            const dataBulanIni = dataPerKabupaten[bulan];
             
-            if (dataBulanIni) {
+            if (dataBulanIni && dataBulanIni.length > 0) {
                 dataBulanIni.forEach(data => {
                     const row = `
                         <tr>
@@ -319,7 +332,7 @@
                     tbody.innerHTML += row;
                 });
             } else {
-                tbody.innerHTML = `<tr><td colspan="4" class="text-center">Data untuk bulan ${bulanKey} tidak tersedia.</td></tr>`;
+                tbody.innerHTML = `<tr><td colspan="4" class="text-center">Data untuk bulan ${bulan} tidak tersedia.</td></tr>`;
             }
         }
 
@@ -347,60 +360,84 @@
             lineChart.update();
         }
 
-        // --- FUNGSI BARU UNTUK MEMUAT DAN MEMPROSES CSV ---
+        // [ENHANCED] Fungsi untuk memuat dan memproses CSV menjadi lebih tangguh
         async function loadAndProcessData() {
-            const options = { header: true, dynamicTyping: true, download: true, skipEmptyLines: true };
+            const baseOptions = { header: true, dynamicTyping: true, download: true, skipEmptyLines: true };
 
             const rataRataPromise = new Promise(resolve => {
-                Papa.parse('rata_rata_provinsi.csv', { ...options, complete: resolve });
+                Papa.parse('rata_rata_provinsi.csv', { 
+                    ...baseOptions, 
+                    delimiter: ',', // [ENHANCEMENT] Eksplisit set delimiter
+                    complete: resolve 
+                });
             });
             const perKabupatenPromise = new Promise(resolve => {
-                Papa.parse('data_per_kabupaten.csv', { ...options, complete: resolve });
+                Papa.parse('data_per_kabupaten.csv', { 
+                    ...baseOptions, 
+                    delimiter: ';', // [ENHANCEMENT] Eksplisit set delimiter
+                    transformHeader: header => header.trim(), // [ENHANCEMENT] Membersihkan spasi di header
+                    complete: resolve 
+                });
             });
 
             // Menunggu kedua file selesai di-download dan di-parse
             const [rataRataResponse, perKabupatenResponse] = await Promise.all([rataRataPromise, perKabupatenPromise]);
 
-            dataRataRataJabar = rataRataResponse.data;
+            // [ENHANCEMENT] Membersihkan data setelah parsing
+            dataRataRataJabar = rataRataResponse.data.map(row => ({
+                ...row,
+                medium: cleanNumber(row.medium),
+                premium: cleanNumber(row.premium),
+                total: cleanNumber(row.total),
+                m2m: cleanNumber(row.m2m),
+                y2y: cleanNumber(row.y2y)
+            }));
             
-            // Mengubah data kabupaten dari array flat menjadi objek yang dikelompokkan per bulan
             dataPerKabupaten = perKabupatenResponse.data.reduce((acc, row) => {
                 const bulan = row.bulan;
+                if (!bulan) return acc; // Lewati baris kosong
+                
                 if (!acc[bulan]) {
                     acc[bulan] = [];
                 }
-                acc[bulan].push(row);
+                
+                acc[bulan].push({
+                    bulan: row.bulan,
+                    kab: row.kab.replace(/\[\d+\]\s*/, ''), // [ENHANCEMENT] Membersihkan nama kabupaten
+                    premium: cleanNumber(row.premium),
+                    medium: cleanNumber(row.medium),
+                    total: cleanNumber(row.total)
+                });
                 return acc;
             }, {});
         }
 
         // --- FUNGSI UTAMA UNTUK INISIALISASI DASHBOARD ---
         async function initDashboard() {
-            console.log("Memulai inisialisasi dashboard...");
-            
             const barCtx = document.getElementById('barChart').getContext('2d');
-            barChart = new Chart(barCtx, { type: 'bar', data: { labels: [], datasets: [] }, options: { responsive: true, maintainAspectRatio: false, scales: { y: { beginAtZero: true } } } });
+            barChart = new Chart(barCtx, { type: 'bar', data: { labels: [], datasets: [] }, options: { responsive: true, maintainAspectRatio: false, scales: { y: { beginAtZero: false, ticks: { callback: value => formatRupiah(value) } } } } });
 
             const lineCtx = document.getElementById('lineChart').getContext('2d');
-            lineChart = new Chart(lineCtx, { type: 'line', data: { labels: [], datasets: [] }, options: { responsive: true, maintainAspectRatio: false, scales: { y: { beginAtZero: false } } } });
+            lineChart = new Chart(lineCtx, { type: 'line', data: { labels: [], datasets: [] }, options: { responsive: true, maintainAspectRatio: false, scales: { y: { beginAtZero: false, ticks: { callback: value => formatRupiah(value) } } } } });
 
             try {
                 await loadAndProcessData();
-                console.log("Data CSV berhasil dimuat dan diproses.");
 
                 const metricFilter = document.getElementById('metricMonthFilter');
                 dataRataRataJabar.forEach(data => {
                     metricFilter.innerHTML += `<option value="${data.bulan}">${data.bulan}</option>`;
                 });
 
-                metricFilter.value = dataRataRataJabar[dataRataRataJabar.length - 1].bulan;
-                populateRataRataTable();
-                
-                const initialMetricMonth = metricFilter.value;
-                updateMetrics(initialMetricMonth);
-                
-                const allMonthsForChart = dataRataRataJabar.map(d => d.bulan);
-                updateCharts(allMonthsForChart);
+                if (dataRataRataJabar.length > 0) {
+                    metricFilter.value = dataRataRataJabar[dataRataRataJabar.length - 1].bulan;
+                    populateRataRataTable();
+                    
+                    const initialMetricMonth = metricFilter.value;
+                    updateMetrics(initialMetricMonth);
+                    
+                    const allMonthsForChart = dataRataRataJabar.map(d => d.bulan);
+                    updateCharts(allMonthsForChart);
+                }
                 
                 metricFilter.addEventListener('change', (e) => {
                     updateMetrics(e.target.value);
@@ -415,13 +452,16 @@
                 document.getElementById('downloadRataRataCSV').addEventListener('click', downloadRataRataHandler);
                 document.getElementById('downloadRataRataXLS').addEventListener('click', downloadRataRataHandler);
 
+                // [FIXED] Memperbaiki logika download untuk tabel kabupaten
                 const downloadKabupatenHandler = () => {
                     const selectedBulanFull = document.getElementById('metricMonthFilter').value;
-                    const bulanKey = selectedBulanFull.split(' ')[0];
-                    const dataToExport = dataPerKabupaten[bulanKey];
+                    // [FIX] Menggunakan 'selectedBulanFull' secara langsung sebagai kunci
+                    const dataToExport = dataPerKabupaten[selectedBulanFull];
                     const headers = ["Kabupaten/Kota", "Harga Medium (Rp)", "Harga Premium (Rp)", "Harga Total (Rp)"];
                     const keys = ["kab", "medium", "premium", "total"];
-                    exportToCSV(dataToExport, headers, keys, `harga-beras-per-kabupaten-${bulanKey}`);
+                    // [ENHANCEMENT] Membuat nama file lebih baik
+                    const fileNameBulan = selectedBulanFull.replace(/\s+/g, '-').toLowerCase();
+                    exportToCSV(dataToExport, headers, keys, `harga-beras-per-kabupaten-${fileNameBulan}`);
                 };
                 document.getElementById('downloadKabupatenCSV').addEventListener('click', downloadKabupatenHandler);
                 document.getElementById('downloadKabupatenXLS').addEventListener('click', downloadKabupatenHandler);
@@ -433,7 +473,6 @@
         }
 
         document.addEventListener('DOMContentLoaded', initDashboard);
-
     </script>
 </body>
 </html>
